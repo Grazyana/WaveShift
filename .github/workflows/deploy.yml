@@ -103,21 +103,113 @@ jobs:
             --parameter-overrides ProjectName=${{ env.PROJECT_NAME }} CloudFrontDomain=${{ steps.cloudfront.outputs.domain }} \
             --no-fail-on-empty-changeset
 
-      - name: Deploy API Gateway stage
+      - name: Deploy API Gateway resources and stage
         run: |
           API_ID=$(aws cloudformation describe-stacks \
             --stack-name ${{ env.PROJECT_NAME }}-app-dev \
             --query "Stacks[0].Outputs[?OutputKey=='ApiId'].OutputValue" \
             --output text)
 
-          # Crea un nuovo deployment
+          LAMBDA_ARN=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.PROJECT_NAME }}-app-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='LambdaFunctionName'].OutputValue" \
+            --output text | xargs -I{} aws lambda get-function --function-name {} --query "Configuration.FunctionArn" --output text)
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION=${{ env.AWS_REGION }}
+
+          ROOT_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/'].id" \
+            --output text)
+
+          JOBS_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/jobs'].id" \
+            --output text)
+
+          JOBS_ID_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/jobs/{jobId}'].id" \
+            --output text)
+
+          # /health
+          HEALTH_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/health'].id" \
+            --output text)
+          if [ -z "$HEALTH_ID" ] || [ "$HEALTH_ID" == "None" ]; then
+            HEALTH_ID=$(aws apigateway create-resource \
+              --rest-api-id $API_ID --parent-id $ROOT_ID --path-part health \
+              --query "id" --output text)
+            aws apigateway put-method --rest-api-id $API_ID --resource-id $HEALTH_ID \
+              --http-method GET --authorization-type NONE
+            aws apigateway put-integration --rest-api-id $API_ID --resource-id $HEALTH_ID \
+              --http-method GET --type MOCK --request-templates '{"application/json":"{"statusCode":200}"}' 
+            aws apigateway put-method-response --rest-api-id $API_ID --resource-id $HEALTH_ID \
+              --http-method GET --status-code 200
+            aws apigateway put-integration-response --rest-api-id $API_ID --resource-id $HEALTH_ID \
+              --http-method GET --status-code 200
+            echo "Risorsa /health creata"
+          fi
+
+          # /jobs OPTIONS (CORS)
+          OPTIONS_EXISTS=$(aws apigateway get-method --rest-api-id $API_ID \
+            --resource-id $JOBS_ID --http-method OPTIONS 2>/dev/null && echo "yes" || echo "no")
+          if [ "$OPTIONS_EXISTS" == "no" ]; then
+            aws apigateway put-method --rest-api-id $API_ID --resource-id $JOBS_ID \
+              --http-method OPTIONS --authorization-type NONE
+            aws apigateway put-integration --rest-api-id $API_ID --resource-id $JOBS_ID \
+              --http-method OPTIONS --type MOCK --request-templates '{"application/json":"{"statusCode":200}"}'
+            aws apigateway put-method-response --rest-api-id $API_ID --resource-id $JOBS_ID \
+              --http-method OPTIONS --status-code 200 \
+              --response-parameters '{"method.response.header.Access-Control-Allow-Headers":false,"method.response.header.Access-Control-Allow-Methods":false,"method.response.header.Access-Control-Allow-Origin":false}'
+            aws apigateway put-integration-response --rest-api-id $API_ID --resource-id $JOBS_ID \
+              --http-method OPTIONS --status-code 200 \
+              --response-parameters '{"method.response.header.Access-Control-Allow-Headers":"'"'"'Content-Type,Authorization'"'"'","method.response.header.Access-Control-Allow-Methods":"'"'"'OPTIONS,GET,POST'"'"'","method.response.header.Access-Control-Allow-Origin":"'"'"'*'"'"'"}'
+            echo "Metodo OPTIONS /jobs creato"
+          fi
+
+          # /jobs/{jobId}/confirm
+          CONFIRM_ID=$(aws apigateway get-resources \
+            --rest-api-id $API_ID \
+            --query "items[?path=='/jobs/{jobId}/confirm'].id" \
+            --output text)
+          if [ -z "$CONFIRM_ID" ] || [ "$CONFIRM_ID" == "None" ]; then
+            AUTHORIZER_ID=$(aws apigateway get-authorizers \
+              --rest-api-id $API_ID \
+              --query "items[0].id" --output text)
+            CONFIRM_ID=$(aws apigateway create-resource \
+              --rest-api-id $API_ID --parent-id $JOBS_ID_ID --path-part confirm \
+              --query "id" --output text)
+            aws apigateway put-method --rest-api-id $API_ID --resource-id $CONFIRM_ID \
+              --http-method POST --authorization-type COGNITO_USER_POOLS \
+              --authorizer-id $AUTHORIZER_ID
+            aws apigateway put-integration --rest-api-id $API_ID --resource-id $CONFIRM_ID \
+              --http-method POST --type AWS_PROXY --integration-http-method POST \
+              --uri "arn:aws:apigateway:${REGION}:lambda:path/2015-03-31/functions/${LAMBDA_ARN}/invocations"
+            echo "Risorsa /jobs/{jobId}/confirm creata"
+          fi
+
+          # DLQ Alarm
+          DLQ_NAME=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.PROJECT_NAME }}-app-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='QueueUrl'].OutputValue" \
+            --output text | awk -F'/' '{print $NF}' | sed 's/waveshift-app-dev-JobsDLQ/waveshift-app-dev-JobsDLQ/')
+          aws cloudwatch put-metric-alarm \
+            --alarm-name "${{ env.PROJECT_NAME }}-dlq-not-empty" \
+            --metric-name ApproximateNumberOfMessagesVisible \
+            --namespace AWS/SQS \
+            --dimensions Name=QueueName,Value=$DLQ_NAME \
+            --statistic Sum --period 300 --evaluation-periods 1 \
+            --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold 2>/dev/null || true
+
+          # Crea deployment e stage prod
           DEPLOYMENT_ID=$(aws apigateway create-deployment \
             --rest-api-id $API_ID \
             --description "Deploy from ${{ github.sha }}" \
-            --query "id" \
-            --output text)
+            --query "id" --output text)
 
-          # Crea o aggiorna lo stage prod
           aws apigateway create-stage \
             --rest-api-id $API_ID \
             --stage-name prod \
