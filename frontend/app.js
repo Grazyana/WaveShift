@@ -739,6 +739,7 @@ async function pollStatus(token) {
             headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await res.json();
+        console.log("[POLL] response:", JSON.stringify(data));
         const status = data.status;
 
         if (status === 'SUCCEEDED') {
