@@ -15,7 +15,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: !Sub "${ProjectName}-AudioJobs"
+      TableName: AudioJobs
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: jobId
@@ -82,7 +82,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      UserPoolName: !Sub "${ProjectName}-pool"
+      UserPoolName: waveshift-pool
       AutoVerifiedAttributes: [email]
 
   UserPoolClient:
@@ -177,7 +177,7 @@ Resources:
   RestApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
-      Name: !Sub "${ProjectName}-api"
+      Name: waveshift-api
 
   CognitoAuthorizer:
     Type: AWS::ApiGateway::Authorizer
@@ -354,17 +354,17 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      RepositoryName: !Sub "${ProjectName}-worker"
+      RepositoryName: waveshift-worker
 
   EcsCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: !Sub "${ProjectName}-cluster"
+      ClusterName: waveshift-cluster
 
   EcsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/ecs/${ProjectName}-worker"
+      LogGroupName: /ecs/waveshift-worker
       RetentionInDays: 7
 
   EcsTaskExecutionRole:
@@ -420,7 +420,7 @@ Resources:
   EcsTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Sub "${ProjectName}-worker"
+      Family: waveshift-worker
       Cpu: '256'
       Memory: '512'
       NetworkMode: awsvpc
@@ -454,7 +454,7 @@ Resources:
     DependsOn: [EcsTaskDefinition]
     Properties:
       Cluster: !Ref EcsCluster
-      ServiceName: !Sub "${ProjectName}-service"
+      ServiceName: waveshift-service
       TaskDefinition: !Ref EcsTaskDefinition
       LaunchType: FARGATE
       DesiredCount: 1
@@ -490,6 +490,6 @@ Outputs:
   EcsClusterName:
     Value: !Ref EcsCluster
   EcsServiceName:
-    Value: !Sub "${ProjectName}-service"
+    Value: waveshift-service
   LambdaFunctionName:
     Value: !Ref LambdaFunction
