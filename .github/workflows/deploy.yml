@@ -47,7 +47,7 @@ jobs:
             --parameter-overrides BucketName=${{ env.PROJECT_NAME }}-frontend-dev \
             --no-fail-on-empty-changeset
 
-      - name: Get CloudFront Domain
+      - name: Get CloudFront Domain and Distribution ID
         id: cloudfront
         run: |
           CLOUDFRONT_DOMAIN=$(aws cloudformation describe-stacks \
@@ -55,6 +55,12 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDomain'].OutputValue" \
             --output text)
           echo "domain=$CLOUDFRONT_DOMAIN" >> $GITHUB_OUTPUT
+
+          DISTRIBUTION_ID=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.PROJECT_NAME }}-frontend-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" \
+            --output text)
+          echo "distribution_id=$DISTRIBUTION_ID" >> $GITHUB_OUTPUT
 
       - name: Deploy App Stack
         run: |
@@ -66,7 +72,7 @@ jobs:
             --no-fail-on-empty-changeset
 
       # 3. CONVERTER - Docker build & push su ECR + aggiorna ECS
-      
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -78,11 +84,17 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='EcrRepoUri'].OutputValue" \
             --output text)
 
-          docker build -t $ECR_REPO:${{ github.sha }} converter/
+          docker build -t $ECR_REPO:${{ github.sha }} -t $ECR_REPO:latest converter/
           docker push $ECR_REPO:${{ github.sha }}
+          docker push $ECR_REPO:latest
 
-      - name: Update ECS Service
+      - name: Update ECS Task Definition with new image
         run: |
+          ECR_REPO=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.PROJECT_NAME }}-app-dev \
+            --query "Stacks[0].Outputs[?OutputKey=='EcrRepoUri'].OutputValue" \
+            --output text)
+
           CLUSTER_NAME=$(aws cloudformation describe-stacks \
             --stack-name ${{ env.PROJECT_NAME }}-app-dev \
             --query "Stacks[0].Outputs[?OutputKey=='EcsClusterName'].OutputValue" \
@@ -93,9 +105,29 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='EcsServiceName'].OutputValue" \
             --output text)
 
+          # Recupera la task definition corrente e aggiorna il tag immagine
+          TASK_FAMILY=$(aws ecs describe-services \
+            --cluster $CLUSTER_NAME \
+            --services $SERVICE_NAME \
+            --query "services[0].taskDefinition" \
+            --output text | awk -F'/' '{print $NF}' | cut -d':' -f1)
+
+          NEW_TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition $TASK_FAMILY \
+            --query 'taskDefinition' | \
+            jq --arg IMAGE "$ECR_REPO:${{ github.sha }}" \
+              '.containerDefinitions[0].image = $IMAGE |
+               del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)')
+
+          NEW_TASK_ARN=$(echo $NEW_TASK_DEF | aws ecs register-task-definition \
+            --cli-input-json /dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
           aws ecs update-service \
             --cluster $CLUSTER_NAME \
             --service $SERVICE_NAME \
+            --task-definition $NEW_TASK_ARN \
             --force-new-deployment
 
       # 4. LAMBDA - Package e deploy
@@ -108,7 +140,11 @@ jobs:
       - name: Package Lambda function
         run: |
           mkdir -p backend/package
-          cp backend/lambda_app.py backend/package/index.py
+          cp backend/lambda_app.py backend/package/lambda_app.py
+          # Installa dipendenze se presenti
+          if [ -f backend/requirements.txt ]; then
+            pip install -r backend/requirements.txt -t backend/package/ --quiet
+          fi
           cd backend/package && zip -r ../lambda_package.zip .
 
       - name: Deploy Lambda function
@@ -126,15 +162,22 @@ jobs:
             --function-name $LAMBDA_NAME
 
       # 5. SYNC FRONTEND FILES to S3
-      
+
       - name: Deploy Frontend Files to S3
         run: |
           BUCKET_NAME=$(aws cloudformation describe-stacks \
             --stack-name ${{ env.PROJECT_NAME }}-frontend-dev \
             --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" \
             --output text)
-          
+
           aws s3 sync frontend/ s3://$BUCKET_NAME/ \
             --delete \
             --exclude "*.yaml"
-          aws s3 cp index.html s3://$BUCKET_NAME/index.html
+
+      # 6. INVALIDA LA CACHE CLOUDFRONT
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ steps.cloudfront.outputs.distribution_id }} \
+            --paths "/*"

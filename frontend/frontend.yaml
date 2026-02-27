@@ -8,6 +8,8 @@ Parameters:
 Resources:
   FrontendBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Ref BucketName
       PublicAccessBlockConfiguration:
@@ -32,13 +34,13 @@ Resources:
         Enabled: true
         DefaultRootObject: index.html
         Origins:
-          - Id: s3origin
+          - Id: s3origin          # <-- ID allineato con DefaultCacheBehavior
             DomainName: !GetAtt FrontendBucket.RegionalDomainName
             OriginAccessControlId: !Ref OAC
             S3OriginConfig:
               OriginAccessIdentity: ""
         DefaultCacheBehavior:
-          TargetOriginId: s3origin
+          TargetOriginId: s3origin  # <-- prima era "s3", causava errore CloudFront
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods: [GET, HEAD, OPTIONS]
           CachedMethods: [GET, HEAD, OPTIONS]
