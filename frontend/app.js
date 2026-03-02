@@ -135,7 +135,6 @@ function initUI() {
     document.getElementById('btn-clear-file').addEventListener('click', clearFileSelection);
     document.getElementById('btn-convert').addEventListener('click', startConversion);
     document.getElementById('btn-download').addEventListener('click', downloadResult);
-    document.getElementById('btn-download-report').addEventListener('click', downloadReport);
     document.querySelector('.brand').addEventListener('click', () => {
         if (cognitoUser) showView('dashboard');
     });
@@ -811,6 +810,4 @@ function handleDeleteAccount() {
 
         showView('auth');
     });
-
-    document.getElementById('btn-download-report').addEventListener('click', downloadReport);
 }
