@@ -650,11 +650,14 @@ function handleFileSelect(e) {
 
 // Mostra la lista dei file selezionati nel dropzone con checkbox cliccabili
 function renderFileList(files) {
-    const placeholder = document.getElementById('upload-dropzone').querySelector('.upload-placeholder');
+    const dropzone = document.getElementById('upload-dropzone');
+    const placeholder = dropzone.querySelector('.upload-placeholder');
     const listContainer = document.getElementById('file-list-display');
     const listEl = document.getElementById('file-list-items');
 
-    placeholder.classList.add('hidden');
+    // FIX 1: il placeholder rimane sempre visibile (solo il btn-browse è sempre disponibile)
+    // Mostriamo la lista file SOTTO il placeholder, senza nasconderlo
+    placeholder.classList.remove('hidden');
     listContainer.classList.remove('hidden');
 
     listEl.innerHTML = '';
@@ -701,6 +704,7 @@ function removeSingleFile(filename) {
 function clearFileSelection() {
     const fileInput = document.getElementById('audio-file');
     fileInput.value = "";
+    // FIX 1: il placeholder (con il btn Scegli File) rimane sempre visibile
     document.getElementById('upload-dropzone').querySelector('.upload-placeholder').classList.remove('hidden');
     document.getElementById('file-list-display').classList.add('hidden');
     document.getElementById('file-list-items').innerHTML = '';
@@ -752,13 +756,13 @@ async function startConversion() {
         if (succeeded.length > 0) {
             document.getElementById('success-state').classList.remove('hidden');
 
-            // Genera un bottone download per ogni job riuscito
+            // FIX 2: bottoni download con testo solo "Scarica"
             const container = document.getElementById('download-buttons-container');
             container.innerHTML = '';
             for (const job of succeeded) {
                 const btn = document.createElement('button');
                 btn.className = 'btn-dl btn-dl-file';
-                btn.textContent = `⬇ Scarica ${job.filename}`;
+                btn.textContent = '⬇ Scarica';
                 btn.addEventListener('click', () => downloadJobResult(token, job.jobId));
                 container.appendChild(btn);
             }
@@ -774,7 +778,46 @@ async function startConversion() {
         document.getElementById('error-state').classList.remove('hidden');
     }
 
-    document.getElementById('btn-convert').disabled = false;
+    // FIX 3: dopo la conversione, il bottone "Converti" diventa "Nuova Conversione"
+    // e al click resetta tutto per ricominciare
+    const convertBtn = document.getElementById('btn-convert');
+    convertBtn.disabled = false;
+    convertBtn.textContent = 'Nuova Conversione';
+    convertBtn.classList.add('btn-reset-conversion');
+
+    // Rimuovi eventuali listener precedenti e aggiungi quello di reset
+    const newBtn = convertBtn.cloneNode(true);
+    convertBtn.parentNode.replaceChild(newBtn, convertBtn);
+    newBtn.addEventListener('click', resetForNewConversion);
+}
+
+// FIX 3: Resetta l'intera area conversione per una nuova sessione
+function resetForNewConversion() {
+    // Pulisci selezione file
+    clearFileSelection();
+
+    // Nascondi la status box
+    const statusBox = document.getElementById('conversion-status');
+    statusBox.classList.add('hidden');
+    document.getElementById('progress-state').classList.add('hidden');
+    document.getElementById('success-state').classList.add('hidden');
+    document.getElementById('error-state').classList.add('hidden');
+    document.getElementById('download-buttons-container').innerHTML = '';
+    document.getElementById('jobs-progress-list').innerHTML = '';
+
+    // Ripristina il bottone "Converti" originale
+    const btn = document.getElementById('btn-convert');
+    btn.textContent = 'Converti';
+    btn.classList.remove('btn-reset-conversion');
+    btn.disabled = true;
+
+    // Ri-aggancia il listener originale
+    const newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    newBtn.addEventListener('click', startConversion);
+
+    // Reset stato globale
+    activeJobs = [];
 }
 
 // Gestisce il ciclo completo di un singolo file: crea job → upload → confirm → poll
@@ -829,7 +872,6 @@ async function convertSingleFile(file, outputFormat, token) {
 
     } catch (e) {
         console.error(`[X] ${file.name}:`, e);
-        // nessun aggiornamento per-item, il contatore verrà aggiornato dal poll
         const job = activeJobs.find(j => j.filename === file.name);
         if (job) job.status = 'FAILED';
     }
